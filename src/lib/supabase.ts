@@ -115,16 +115,18 @@ export async function saveWorkout(workout: ActiveWorkout, userId: string, userEm
 
     if (eError || !eData) { console.error('saveExercise:', eError); continue }
 
-    await sb.from('sets').insert(
-      logged.map((s, idx) => ({
-        exercise_id: eData.id,
-        set_number: idx + 1,
-        reps: s.reps || null,
-        weight: s.weight || null,
-        set_type: s.type,
-        logged_at: s.loggedAt ? new Date(s.loggedAt).toISOString() : null,
-      }))
-    )
+    const dbSets: Record<string, unknown>[] = []
+    let setNum = 1
+    for (const s of logged) {
+      if ((s.type === 'dropset' || s.type === 'halfrep') && s.dropEntries?.length) {
+        for (const entry of s.dropEntries) {
+          dbSets.push({ exercise_id: eData.id, set_number: setNum++, reps: entry.reps || null, weight: entry.weight || null, set_type: s.type, logged_at: s.loggedAt ? new Date(s.loggedAt).toISOString() : null })
+        }
+      } else {
+        dbSets.push({ exercise_id: eData.id, set_number: setNum++, reps: s.reps || null, weight: s.weight || null, set_type: s.type, logged_at: s.loggedAt ? new Date(s.loggedAt).toISOString() : null })
+      }
+    }
+    await sb.from('sets').insert(dbSets)
   }
 
   // Award points to groups after saving
@@ -346,6 +348,54 @@ export async function fetchGroupLeaderboard(groupId: string): Promise<GroupMembe
   )
 
   return scores.sort((a, b) => b.points - a.points)
+}
+
+// ── Import historical workout (from text log) ─────────────────────────────────
+
+export async function importHistoricalWorkout(
+  exercises: import('@/lib/parseWorkout').ParsedExercise[],
+  userId: string,
+  userEmail: string | undefined,
+  startedAt: Date,
+): Promise<boolean> {
+  const sb = getSupabase() as any
+  if (userEmail) await ensureProfile(userId, userEmail)
+
+  const finishedAt = new Date(startedAt.getTime() + 60 * 60 * 1000)
+  const { data: wData, error: wError } = await sb
+    .from('workouts')
+    .insert({ user_id: userId, started_at: startedAt.toISOString(), finished_at: finishedAt.toISOString(), duration_seconds: 3600, notes: null })
+    .select('id')
+    .single()
+
+  if (wError || !wData) { console.error('importHistoricalWorkout:', wError); return false }
+
+  for (let i = 0; i < exercises.length; i++) {
+    const ex = exercises[i]
+    if (!ex.sets.length) continue
+    const { data: eData, error: eError } = await sb
+      .from('exercises')
+      .insert({ workout_id: wData.id, name: ex.name, order_index: i })
+      .select('id')
+      .single()
+    if (eError || !eData) continue
+
+    const dbSets: Record<string, unknown>[] = []
+    let setNum = 1
+    for (const s of ex.sets) {
+      if ((s.type === 'dropset' || s.type === 'halfrep') && s.dropEntries?.length) {
+        for (const entry of s.dropEntries) {
+          dbSets.push({ exercise_id: eData.id, set_number: setNum++, reps: entry.reps || null, weight: entry.weight || null, set_type: s.type, logged_at: startedAt.toISOString() })
+        }
+      } else {
+        dbSets.push({ exercise_id: eData.id, set_number: setNum++, reps: s.reps || null, weight: s.weight || null, set_type: s.type, logged_at: startedAt.toISOString() })
+      }
+    }
+    await sb.from('sets').insert(dbSets)
+  }
+
+  await awardWorkoutPoints(userId)
+  return true
 }
 
 // Award points hook — called after saving a workout (currently just a log, scores computed live)

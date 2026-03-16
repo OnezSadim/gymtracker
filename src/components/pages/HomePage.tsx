@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Dumbbell, TrendingUp, Clock, LogOut, ChevronRight } from 'lucide-react'
+import { Dumbbell, TrendingUp, Clock, LogOut, ChevronRight, Settings, X, Eye, EyeOff } from 'lucide-react'
 import { signIn, signUp, signOut, fetchRecentStats } from '@/lib/supabase'
 import type { User } from '@supabase/supabase-js'
 
@@ -286,6 +286,206 @@ function AuthForm({ onLogin }: { onLogin: (user: User) => void }) {
   )
 }
 
+// ── Settings Panel ────────────────────────────────────────────────────────────
+
+function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const [projectId,    setProjectId]    = useState('')
+  const [clientId,     setClientId]     = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [showSecret,   setShowSecret]   = useState(false)
+  const [geminiKey,    setGeminiKey]    = useState('')
+  const [showGemini,   setShowGemini]   = useState(false)
+  const [connected,    setConnected]    = useState(false)
+  const [email,        setEmail]        = useState('')
+  const [connecting,   setConnecting]   = useState(false)
+  const [connectError, setConnectError] = useState('')
+  const [savedMsg,     setSavedMsg]     = useState('')
+
+  useEffect(() => {
+    // Lazy import to avoid SSR issues
+    import('@/lib/googleAuth').then(({ loadCredentials, isConnected, connectedEmail }) => {
+      const creds = loadCredentials()
+      setProjectId(creds.projectId)
+      setClientId(creds.clientId)
+      setClientSecret(creds.clientSecret)
+      setConnected(isConnected())
+      setEmail(connectedEmail())
+    })
+    setGeminiKey(localStorage.getItem('gymtracker_gemini_key') || '')
+  }, [])
+
+  const handleSaveCreds = async () => {
+    const { saveCredentials } = await import('@/lib/googleAuth')
+    saveCredentials({ projectId, clientId, clientSecret })
+    setSavedMsg('Credentials saved')
+    setTimeout(() => setSavedMsg(''), 2000)
+  }
+
+  const handleConnect = async () => {
+    if (!clientId || !clientSecret) {
+      setConnectError('Enter Client ID and Client Secret first.')
+      return
+    }
+    setConnecting(true)
+    setConnectError('')
+    const { saveCredentials, connectGoogleAccount, isConnected, connectedEmail } = await import('@/lib/googleAuth')
+    saveCredentials({ projectId, clientId, clientSecret })
+    const result = await connectGoogleAccount(clientId, clientSecret)
+    if (result.ok) {
+      setConnected(isConnected())
+      setEmail(connectedEmail())
+    } else {
+      setConnectError(result.error || 'Connection failed.')
+    }
+    setConnecting(false)
+  }
+
+  const handleDisconnect = async () => {
+    const { disconnect } = await import('@/lib/googleAuth')
+    disconnect()
+    setConnected(false)
+    setEmail('')
+  }
+
+  const handleSaveGemini = () => {
+    if (geminiKey.trim()) localStorage.setItem('gymtracker_gemini_key', geminiKey.trim())
+    else localStorage.removeItem('gymtracker_gemini_key')
+    setSavedMsg('Saved')
+    setTimeout(() => setSavedMsg(''), 2000)
+  }
+
+  const inputStyle = {
+    width: '100%', padding: '11px 14px', background: 'var(--surface-2)',
+    border: '1px solid var(--border)', borderRadius: 10,
+    color: 'var(--text)', fontFamily: 'var(--font-jetbrains)', fontSize: 13,
+  } as const
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(6px)', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '16px 16px 0', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+        <Settings size={15} color="var(--accent)" />
+        <span style={{ fontFamily: 'var(--font-bebas)', fontSize: 20, color: 'var(--text)', letterSpacing: '0.08em', flex: 1 }}>SETTINGS</span>
+        <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: 'var(--surface)', color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+          <X size={16} />
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '20px 16px 40px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+        {/* ── Google Cloud Vertex AI ── */}
+        <div style={{ background: 'var(--surface)', borderRadius: 14, border: '1px solid var(--border)', padding: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <div style={{ fontFamily: 'var(--font-bebas)', fontSize: 15, color: 'var(--text)', letterSpacing: '0.06em' }}>GOOGLE CLOUD VERTEX AI</div>
+            {connected && (
+              <span style={{ fontSize: 10, fontFamily: 'var(--font-jetbrains)', color: 'var(--success)', background: 'rgba(0,255,136,0.1)', border: '1px solid rgba(0,255,136,0.25)', padding: '2px 7px', borderRadius: 5 }}>CONNECTED</span>
+            )}
+          </div>
+          <p style={{ fontFamily: 'var(--font-dm-sans)', fontSize: 12, color: 'var(--text-3)', marginBottom: 14, lineHeight: 1.5 }}>
+            AI text parsing via your Google Cloud project (Gemini on Vertex AI).
+            Create OAuth credentials at <span style={{ color: 'var(--accent)' }}>console.cloud.google.com → APIs &amp; Services → Credentials</span> (type: Web application, redirect URI: <span style={{ color: 'var(--accent)' }}>{typeof window !== 'undefined' ? window.location.origin : ''}/auth/callback</span>).
+          </p>
+
+          {connected ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontFamily: 'var(--font-jetbrains)', color: 'var(--text-2)' }}>{email || 'Connected'}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-dm-sans)', marginTop: 2 }}>Project: {projectId || '—'}</div>
+              </div>
+              <button onClick={handleDisconnect} style={{ padding: '8px 14px', background: 'transparent', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-3)', fontFamily: 'var(--font-dm-sans)', fontSize: 12, cursor: 'pointer' }}>
+                Disconnect
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <input value={projectId} onChange={e => setProjectId(e.target.value)} placeholder="GCP Project ID (e.g. my-project-123)" style={inputStyle} />
+              <input value={clientId} onChange={e => setClientId(e.target.value)} placeholder="OAuth Client ID (…apps.googleusercontent.com)" style={inputStyle} />
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showSecret ? 'text' : 'password'}
+                  value={clientSecret}
+                  onChange={e => setClientSecret(e.target.value)}
+                  placeholder="OAuth Client Secret (GOCSPX-…)"
+                  style={{ ...inputStyle, paddingRight: 44 }}
+                />
+                <button onClick={() => setShowSecret(s => !s)} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', display: 'flex' }}>
+                  {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+
+              {connectError && (
+                <div style={{ padding: '8px 12px', background: 'rgba(255,68,68,0.1)', border: '1px solid rgba(255,68,68,0.3)', borderRadius: 8, color: 'var(--danger)', fontSize: 12, fontFamily: 'var(--font-dm-sans)' }}>
+                  {connectError}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={handleConnect} disabled={connecting}
+                  style={{ flex: 1, padding: '11px', background: 'var(--accent)', border: 'none', borderRadius: 9, fontFamily: 'var(--font-bebas)', fontSize: 15, letterSpacing: '0.06em', color: '#0A0A0A', cursor: connecting ? 'wait' : 'pointer', opacity: connecting ? 0.7 : 1 }}>
+                  {connecting ? 'CONNECTING...' : 'SIGN IN WITH GOOGLE'}
+                </button>
+                <button onClick={handleSaveCreds}
+                  style={{ padding: '11px 16px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 9, fontFamily: 'var(--font-bebas)', fontSize: 14, color: 'var(--text-2)', cursor: 'pointer' }}>
+                  SAVE
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Fallback: Gemini API Key ── */}
+        <div style={{ background: 'var(--surface)', borderRadius: 14, border: '1px solid var(--border)', padding: '16px' }}>
+          <div style={{ fontFamily: 'var(--font-bebas)', fontSize: 15, color: 'var(--text)', letterSpacing: '0.06em', marginBottom: 4 }}>GEMINI API KEY (FALLBACK)</div>
+          <p style={{ fontFamily: 'var(--font-dm-sans)', fontSize: 12, color: 'var(--text-3)', marginBottom: 12, lineHeight: 1.5 }}>
+            Used if Vertex AI is not connected. Free key at <span style={{ color: 'var(--accent)' }}>aistudio.google.com</span>
+          </p>
+          <div style={{ position: 'relative', marginBottom: 10 }}>
+            <input
+              type={showGemini ? 'text' : 'password'}
+              value={geminiKey}
+              onChange={e => setGeminiKey(e.target.value)}
+              placeholder="AIza..."
+              style={{ ...inputStyle, paddingRight: 44 }}
+            />
+            <button onClick={() => setShowGemini(s => !s)} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', display: 'flex' }}>
+              {showGemini ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <button onClick={handleSaveGemini}
+            style={{ padding: '9px 18px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 9, fontFamily: 'var(--font-bebas)', fontSize: 14, color: 'var(--text-2)', cursor: 'pointer' }}>
+            {savedMsg === 'Saved' ? 'SAVED ✓' : 'SAVE'}
+          </button>
+        </div>
+
+        {/* ── Set type guide ── */}
+        <div style={{ background: 'var(--surface)', borderRadius: 14, border: '1px solid var(--border)', padding: '16px' }}>
+          <div style={{ fontFamily: 'var(--font-bebas)', fontSize: 15, color: 'var(--text)', letterSpacing: '0.06em', marginBottom: 12 }}>SET TYPE GUIDE</div>
+          {[
+            { label: 'N', color: '#888',    bg: '#1E1E1E',                   name: 'Normal',   desc: 'Standard working set' },
+            { label: 'W', color: '#FFAA00', bg: 'rgba(255,170,0,0.12)',      name: 'Warmup',   desc: 'Lighter prep set, shorter rest' },
+            { label: 'D', color: '#6366f1', bg: 'rgba(99,102,241,0.12)',     name: 'Dropset',  desc: 'Reduce weight between drops, no rest — tap ↓ to add more drops' },
+            { label: 'H', color: '#22d3ee', bg: 'rgba(34,211,238,0.12)',     name: 'Half Rep', desc: 'Partial range of motion — supports multiple weight/rep combos' },
+            { label: 'F', color: '#FF4444', bg: 'rgba(255,68,68,0.12)',      name: 'Failure',  desc: 'Train to muscular failure, max rest' },
+          ].map(t => (
+            <div key={t.label} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 0', borderTop: t.label !== 'N' ? '1px solid var(--border)' : 'none' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: 5, background: t.bg, color: t.color, border: `1px solid ${t.color}33`, fontFamily: 'var(--font-jetbrains)', fontSize: 11, fontWeight: 600, flexShrink: 0, marginTop: 1 }}>{t.label}</span>
+              <div>
+                <span style={{ fontFamily: 'var(--font-dm-sans)', fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>{t.name}  </span>
+                <span style={{ fontFamily: 'var(--font-dm-sans)', fontSize: 12, color: 'var(--text-3)' }}>{t.desc}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {savedMsg && savedMsg !== 'Saved' && (
+          <div style={{ padding: '10px 14px', background: 'rgba(0,255,136,0.08)', border: '1px solid rgba(0,255,136,0.2)', borderRadius: 10, color: 'var(--success)', fontFamily: 'var(--font-dm-sans)', fontSize: 13, textAlign: 'center' }}>
+            {savedMsg}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 function Dashboard({ user, onStartWorkout, onLogout }: {
@@ -293,6 +493,7 @@ function Dashboard({ user, onStartWorkout, onLogout }: {
   onStartWorkout: () => void
   onLogout: () => void
 }) {
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [stats, setStats] = useState<{
     weeklyCount: number
     weeklySeconds: number
@@ -326,14 +527,7 @@ function Dashboard({ user, onStartWorkout, onLogout }: {
 
         <button
           onClick={onLogout}
-          style={{
-            width: 36, height: 36, borderRadius: 10,
-            border: '1px solid var(--border)',
-            background: 'var(--surface)',
-            color: 'var(--text-2)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer',
-          }}
+          style={{ width: 36, height: 36, borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
         >
           <LogOut size={15} />
         </button>
@@ -417,6 +611,32 @@ function Dashboard({ user, onStartWorkout, onLogout }: {
           </div>
         </div>
       )}
+
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+
+      {/* Settings row */}
+      <div className="fade-up-4" style={{ marginBottom: 16 }}>
+        <button
+          onClick={() => setSettingsOpen(true)}
+          style={{
+            width: '100%',
+            padding: '14px 16px',
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 14,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ width: 34, height: 34, borderRadius: 9, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Settings size={16} color="var(--text-2)" />
+          </div>
+          <span style={{ fontFamily: 'var(--font-dm-sans)', fontSize: 15, color: 'var(--text)', flex: 1, textAlign: 'left' }}>Settings</span>
+          <ChevronRight size={16} color="var(--text-3)" />
+        </button>
+      </div>
 
       {/* CTA */}
       <div className="fade-up-4">

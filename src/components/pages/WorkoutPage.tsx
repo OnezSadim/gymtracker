@@ -4,9 +4,10 @@ import {
   useState, useEffect, useRef, useCallback,
   type KeyboardEvent, type ChangeEvent,
 } from 'react'
-import { Plus, X, ChevronDown, ChevronUp, Link2, Link2Off, CheckCircle2, Dumbbell, History } from 'lucide-react'
+import { Plus, X, ChevronDown, ChevronUp, Link2, Link2Off, CheckCircle2, Dumbbell, History, FileText, Download } from 'lucide-react'
 import type { ActiveWorkout, Exercise, WorkoutSet, SetType } from '@/types/workout'
-import { saveWorkout, fetchLastExerciseSession, type LastSessionData } from '@/lib/supabase'
+import { saveWorkout, fetchLastExerciseSession, importHistoricalWorkout, type LastSessionData } from '@/lib/supabase'
+import { parseWorkoutText, parseWithGemini, parseWithVertexAI, detectDateFromText, type ParsedExercise } from '@/lib/parseWorkout'
 import type { User } from '@supabase/supabase-js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -15,12 +16,13 @@ const SET_TYPE_CONFIG: Record<SetType, { label: string; color: string; bg: strin
   normal:  { label: 'N',  color: '#888',    bg: '#1E1E1E' },
   warmup:  { label: 'W',  color: '#FFAA00', bg: 'rgba(255,170,0,0.12)' },
   dropset: { label: 'D',  color: '#6366f1', bg: 'rgba(99,102,241,0.12)' },
+  halfrep: { label: 'H',  color: '#22d3ee', bg: 'rgba(34,211,238,0.12)' },
   failure: { label: 'F',  color: '#FF4444', bg: 'rgba(255,68,68,0.12)' },
 }
-const SET_TYPE_ORDER: SetType[] = ['normal', 'warmup', 'dropset', 'failure']
+const SET_TYPE_ORDER: SetType[] = ['normal', 'warmup', 'dropset', 'halfrep', 'failure']
 const SUPERSET_COLORS = ['#6366f1', '#ec4899', '#f97316', '#14b8a6', '#f59e0b', '#8b5cf6']
 const REST_SUGGESTIONS: Record<SetType, number> = {
-  normal: 90, warmup: 45, dropset: 30, failure: 120,
+  normal: 90, warmup: 45, dropset: 30, halfrep: 45, failure: 120,
 }
 
 function uid() { return Math.random().toString(36).slice(2, 10) }
@@ -107,7 +109,6 @@ function LastSessionPanel({ data }: { data: LastSessionData | null | 'loading' }
 
   if (!data) return null
 
-  // Build compact summary: "100×8, 100×8, 95×8.5"
   const summary = data.sets
     .slice(0, 4)
     .map(s => `${s.weight || '?'}×${s.reps || '?'}`)
@@ -118,10 +119,7 @@ function LastSessionPanel({ data }: { data: LastSessionData | null | 'loading' }
     <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, marginBottom: 4 }}>
       <button
         onClick={() => setExpanded(e => !e)}
-        style={{
-          width: '100%', background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-          display: 'flex', alignItems: 'center', gap: 6, textAlign: 'left',
-        }}
+        style={{ width: '100%', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 6, textAlign: 'left' }}
       >
         <History size={11} color="var(--accent)" style={{ flexShrink: 0 }} />
         <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 10, color: 'var(--accent)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
@@ -138,14 +136,7 @@ function LastSessionPanel({ data }: { data: LastSessionData | null | 'loading' }
           {data.sets.map((s) => {
             const tc = SET_TYPE_CONFIG[s.set_type as SetType] ?? SET_TYPE_CONFIG.normal
             return (
-              <div
-                key={s.set_number}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '4px 8px', background: 'var(--surface-2)', borderRadius: 7,
-                  opacity: 0.75,
-                }}
-              >
+              <div key={s.set_number} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', background: 'var(--surface-2)', borderRadius: 7, opacity: 0.75 }}>
                 <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 10, color: 'var(--text-3)', width: 14 }}>{s.set_number}</span>
                 <span className="type-badge" style={{ color: tc.color, background: tc.bg, border: `1px solid ${tc.color}30`, pointerEvents: 'none' }}>{tc.label}</span>
                 <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 12, color: 'var(--text-2)', flex: 1 }}>{s.weight || '—'} kg</span>
@@ -169,12 +160,88 @@ function SetRow({ set, index, onUpdate, onLog, onRemove, weightRef }: {
 }) {
   const tc = SET_TYPE_CONFIG[set.type]
   const repsRef = useRef<HTMLInputElement>(null)
+  const isMultiEntry = set.type === 'dropset' || set.type === 'halfrep'
 
   const cycleType = () => {
     const i = SET_TYPE_ORDER.indexOf(set.type)
-    onUpdate({ type: SET_TYPE_ORDER[(i + 1) % SET_TYPE_ORDER.length] })
+    const nextType = SET_TYPE_ORDER[(i + 1) % SET_TYPE_ORDER.length]
+    if ((nextType === 'dropset' || nextType === 'halfrep') && !set.dropEntries?.length) {
+      onUpdate({ type: nextType, dropEntries: [{ weight: set.weight, reps: set.reps }, { weight: '', reps: '' }] })
+    } else if (nextType !== 'dropset' && nextType !== 'halfrep' && set.dropEntries?.length) {
+      const first = set.dropEntries[0]
+      onUpdate({ type: nextType, weight: first?.weight || set.weight, reps: first?.reps || set.reps, dropEntries: undefined })
+    } else {
+      onUpdate({ type: nextType })
+    }
   }
 
+  // ── Multi-entry (dropset / halfrep) ──
+  if (isMultiEntry) {
+    const entries = set.dropEntries ?? [{ weight: set.weight, reps: set.reps }]
+
+    const updateEntry = (i: number, u: Partial<{ weight: string; reps: string }>) =>
+      onUpdate({ dropEntries: entries.map((e, idx) => idx === i ? { ...e, ...u } : e) })
+    const addEntry = () => onUpdate({ dropEntries: [...entries, { weight: '', reps: '' }] })
+    const removeEntry = (i: number) => {
+      if (entries.length <= 1) return
+      onUpdate({ dropEntries: entries.filter((_, idx) => idx !== i) })
+    }
+
+    return (
+      <div className="set-appear" style={{ display: 'flex', gap: 6, padding: '5px 0', opacity: set.logged ? 0.5 : 1, transition: 'opacity 0.2s', alignItems: 'flex-start' }}>
+        <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 12, color: 'var(--text-3)', width: 18, textAlign: 'center', flexShrink: 0, paddingTop: 7 }}>{index + 1}</span>
+        <button className="type-badge" style={{ color: tc.color, background: tc.bg, border: `1px solid ${tc.color}30`, flexShrink: 0, marginTop: 5 }} onClick={cycleType}>{tc.label}</button>
+
+        <div style={{ flex: 1 }}>
+          {entries.map((entry, i) => (
+            <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: i < entries.length - 1 ? 4 : 0 }}>
+              <span style={{ width: 12, textAlign: 'center', flexShrink: 0, color: tc.color, fontSize: 11 }}>{i > 0 ? '↓' : ''}</span>
+              <div style={{ flex: 1, background: 'var(--surface-2)', borderRadius: 7, border: '1px solid var(--border)', padding: '5px 8px' }}>
+                <input
+                  ref={i === 0 ? weightRef : undefined}
+                  type="text" inputMode="decimal" value={entry.weight}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => updateEntry(i, { weight: e.target.value })}
+                  placeholder="kg" disabled={set.logged}
+                  style={{ width: '100%', fontFamily: 'var(--font-jetbrains)', fontSize: 14, color: 'var(--text)', background: 'transparent' }}
+                />
+              </div>
+              <div style={{ flex: 1, background: 'var(--surface-2)', borderRadius: 7, border: '1px solid var(--border)', padding: '5px 8px' }}>
+                <input
+                  type="text" inputMode="decimal" value={entry.reps}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => updateEntry(i, { reps: e.target.value })}
+                  placeholder="reps" disabled={set.logged}
+                  style={{ width: '100%', fontFamily: 'var(--font-jetbrains)', fontSize: 14, color: 'var(--text)', background: 'transparent' }}
+                />
+              </div>
+              {entries.length > 1 && !set.logged && (
+                <button onClick={() => removeEntry(i)} style={{ width: 20, height: 20, borderRadius: 5, border: 'none', background: 'transparent', color: 'var(--text-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer', padding: 0 }}>
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+          ))}
+          {!set.logged && (
+            <button onClick={addEntry} style={{ marginTop: 5, marginLeft: 18, padding: '2px 8px', background: 'transparent', border: `1px dashed ${tc.color}55`, borderRadius: 5, color: tc.color, fontSize: 10, fontFamily: 'var(--font-jetbrains)', cursor: 'pointer', letterSpacing: '0.05em' }}>
+              + drop
+            </button>
+          )}
+        </div>
+
+        {set.logged ? (
+          <CheckCircle2 size={22} className="check-pop" style={{ color: 'var(--accent)', flexShrink: 0, filter: 'drop-shadow(0 0 4px var(--accent-glow))', marginTop: 5 }} />
+        ) : (
+          <button onClick={onLog} style={{ width: 34, height: 34, borderRadius: 8, border: '1.5px solid var(--accent)', background: 'var(--accent-dim)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer' }}>
+            <CheckCircle2 size={16} />
+          </button>
+        )}
+        <button onClick={onRemove} style={{ width: 26, height: 26, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer', marginTop: 4 }}>
+          <X size={13} />
+        </button>
+      </div>
+    )
+  }
+
+  // ── Normal set row ──
   const handleKey = (e: KeyboardEvent<HTMLInputElement>, field: 'weight' | 'reps') => {
     if (e.key === 'Enter') { field === 'weight' ? repsRef.current?.focus() : onLog() }
   }
@@ -182,23 +249,19 @@ function SetRow({ set, index, onUpdate, onLog, onRemove, weightRef }: {
   return (
     <div className="set-appear" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 0', opacity: set.logged ? 0.5 : 1, transition: 'opacity 0.2s' }}>
       <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 12, color: 'var(--text-3)', width: 18, textAlign: 'center', flexShrink: 0 }}>{index + 1}</span>
-
       <button className="type-badge" style={{ color: tc.color, background: tc.bg, border: `1px solid ${tc.color}30` }} onClick={cycleType}>{tc.label}</button>
-
       <div style={{ flex: 1, background: 'var(--surface-2)', borderRadius: 7, border: '1px solid var(--border)', padding: '5px 8px' }}>
         <input ref={weightRef} type="text" inputMode="decimal" value={set.weight}
           onChange={(e: ChangeEvent<HTMLInputElement>) => onUpdate({ weight: e.target.value })}
           onKeyDown={(e) => handleKey(e, 'weight')} placeholder="kg" disabled={set.logged}
           style={{ width: '100%', fontFamily: 'var(--font-jetbrains)', fontSize: 14, color: 'var(--text)', background: 'transparent' }} />
       </div>
-
       <div style={{ flex: 1, background: 'var(--surface-2)', borderRadius: 7, border: '1px solid var(--border)', padding: '5px 8px' }}>
         <input ref={repsRef} type="text" inputMode="decimal" value={set.reps}
           onChange={(e: ChangeEvent<HTMLInputElement>) => onUpdate({ reps: e.target.value })}
           onKeyDown={(e) => handleKey(e, 'reps')} placeholder="reps" disabled={set.logged}
           style={{ width: '100%', fontFamily: 'var(--font-jetbrains)', fontSize: 14, color: 'var(--text)', background: 'transparent' }} />
       </div>
-
       {set.logged ? (
         <CheckCircle2 size={22} className="check-pop" style={{ color: 'var(--accent)', flexShrink: 0, filter: 'drop-shadow(0 0 4px var(--accent-glow))' }} />
       ) : (
@@ -206,7 +269,6 @@ function SetRow({ set, index, onUpdate, onLog, onRemove, weightRef }: {
           <CheckCircle2 size={16} />
         </button>
       )}
-
       <button onClick={onRemove} style={{ width: 26, height: 26, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer' }}>
         <X size={13} />
       </button>
@@ -237,21 +299,17 @@ function ExerciseCard({ exercise, onUpdate, onRemove, onAddSet, onLogSet, onUpda
         <input value={exercise.name} onChange={(e) => onUpdate({ name: e.target.value })}
           style={{ flex: 1, fontFamily: 'var(--font-bebas)', fontSize: 18, color: 'var(--text)', letterSpacing: '0.06em', background: 'transparent' }}
           placeholder="EXERCISE NAME" />
-
         {loggedCount > 0 && (
           <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 10, color: 'var(--accent)', background: 'var(--accent-dim)', padding: '2px 7px', borderRadius: 5, flexShrink: 0 }}>
             {loggedCount}/{exercise.sets.length}
           </span>
         )}
-
         <button onClick={onToggleSuperset} title={exercise.supersetGroup ? 'Remove superset' : 'Link as superset'} style={{ width: 28, height: 28, borderRadius: 7, border: '1px solid var(--border)', background: exercise.supersetGroup ? (supersetColor ?? '') + '22' : 'transparent', color: exercise.supersetGroup ? supersetColor : 'var(--text-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 }}>
           {exercise.supersetGroup ? <Link2 size={13} /> : <Link2Off size={13} />}
         </button>
-
         <button onClick={() => setCollapsed(c => !c)} style={{ width: 28, height: 28, borderRadius: 7, border: 'none', background: 'transparent', color: 'var(--text-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 }}>
           {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
         </button>
-
         <button onClick={onRemove} style={{ width: 28, height: 28, borderRadius: 7, border: 'none', background: 'transparent', color: 'var(--text-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 }}>
           <X size={14} />
         </button>
@@ -280,10 +338,191 @@ function ExerciseCard({ exercise, onUpdate, onRemove, onAddSet, onLogSet, onUpda
             <Plus size={14} />Add Set
           </button>
 
-          {/* Last session reference */}
           <LastSessionPanel data={lastSession} />
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Text Log Modal ────────────────────────────────────────────────────────────
+
+type TextLogView = 'input' | 'preview' | 'date'
+
+function TextLogModal({ hasActiveWorkout, onClose, onAddToWorkout, onImportHistory }: {
+  hasActiveWorkout: boolean
+  onClose: () => void
+  onAddToWorkout: (exercises: ParsedExercise[]) => void
+  onImportHistory: (exercises: ParsedExercise[], date: Date) => void
+}) {
+  const [view, setView] = useState<TextLogView>('input')
+  const [text, setText] = useState('')
+  const [parsed, setParsed] = useState<ParsedExercise[]>([])
+  const [parsing, setParsing] = useState(false)
+  const [parseError, setParseError] = useState('')
+  const [importDate, setImportDate] = useState('')
+
+  const [aiMode, setAiMode] = useState<'vertex' | 'gemini' | 'local'>('local')
+
+  useEffect(() => {
+    import('@/lib/googleAuth').then(({ isConnected }) => {
+      if (isConnected()) { setAiMode('vertex'); return }
+      if (localStorage.getItem('gymtracker_gemini_key')) setAiMode('gemini')
+    }).catch(() => {
+      if (localStorage.getItem('gymtracker_gemini_key')) setAiMode('gemini')
+    })
+  }, [])
+
+  const handleParse = async () => {
+    if (!text.trim()) return
+    setParsing(true)
+    setParseError('')
+    try {
+      let result: ParsedExercise[]
+      if (aiMode === 'vertex') {
+        result = await parseWithVertexAI(text)
+      } else if (aiMode === 'gemini') {
+        const key = localStorage.getItem('gymtracker_gemini_key')!
+        result = await parseWithGemini(text, key)
+      } else {
+        result = parseWorkoutText(text)
+      }
+      if (result.length === 0) {
+        setParseError("Couldn't find any exercises or sets. Check your format.")
+      } else {
+        setParsed(result)
+        setView('preview')
+      }
+    } finally {
+      setParsing(false)
+    }
+  }
+
+  const handleGoToDate = () => {
+    const detected = detectDateFromText(text)
+    setImportDate(detected || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 16))
+    setView('date')
+  }
+
+  const backLabel = view === 'date' ? 'preview' : 'input'
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.9)', backdropFilter: 'blur(6px)', display: 'flex', flexDirection: 'column' }}>
+      {/* Header */}
+      <div style={{ padding: '16px 16px 0', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+        <FileText size={15} color="var(--accent)" />
+        <span style={{ fontFamily: 'var(--font-bebas)', fontSize: 20, color: 'var(--text)', letterSpacing: '0.08em', flex: 1 }}>
+          {view === 'input' ? 'TEXT LOG' : view === 'preview' ? 'PARSED WORKOUT' : 'IMPORT AS HISTORY'}
+        </span>
+        {view !== 'input' && (
+          <button onClick={() => setView(backLabel as TextLogView)}
+            style={{ padding: '5px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-2)', fontSize: 12, fontFamily: 'var(--font-dm-sans)', cursor: 'pointer' }}>
+            Back
+          </button>
+        )}
+        <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: 'var(--surface)', color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+          <X size={16} />
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '12px 16px 24px' }}>
+
+        {/* ── Input view ── */}
+        {view === 'input' && (
+          <>
+            {aiMode !== 'local' && (
+              <div style={{ marginBottom: 8, padding: '6px 10px', background: 'rgba(200,255,0,0.06)', border: '1px solid rgba(200,255,0,0.2)', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 10, color: 'var(--accent)', fontFamily: 'var(--font-jetbrains)', letterSpacing: '0.08em' }}>
+                  ✦ AI PARSING ACTIVE · {aiMode === 'vertex' ? 'VERTEX AI' : 'GEMINI'}
+                </span>
+              </div>
+            )}
+            <textarea
+              value={text}
+              onChange={e => setText(e.target.value)}
+              autoFocus
+              placeholder={`Type or paste your workout. Examples:\n\nbench press\n  warmup 60 x 15\n  100 x 8\n  rest 90s\n  100 x 8\n\ndropset 100x8 → 80x10 → 60x12\n\nhalf reps 80 x 20\n\nsquat\n  120 x 5\n  rest 3min\n  120 x 5`}
+              style={{ width: '100%', minHeight: 260, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, color: 'var(--text)', fontFamily: 'var(--font-jetbrains)', fontSize: 13, lineHeight: 1.7, padding: '14px', resize: 'vertical' }}
+            />
+            {parseError && (
+              <div style={{ marginTop: 8, padding: '8px 12px', background: 'rgba(255,68,68,0.1)', border: '1px solid rgba(255,68,68,0.3)', borderRadius: 8, color: 'var(--danger)', fontSize: 13, fontFamily: 'var(--font-dm-sans)' }}>
+                {parseError}
+              </div>
+            )}
+            <button onClick={handleParse} disabled={parsing || !text.trim()}
+              style={{ marginTop: 12, width: '100%', padding: '14px', background: text.trim() ? 'var(--accent)' : 'var(--surface-2)', border: 'none', borderRadius: 12, fontFamily: 'var(--font-bebas)', fontSize: 18, letterSpacing: '0.08em', color: text.trim() ? '#0A0A0A' : 'var(--text-3)', cursor: text.trim() ? 'pointer' : 'not-allowed' }}>
+              {parsing ? 'PARSING...' : 'PARSE'}
+            </button>
+          </>
+        )}
+
+        {/* ── Preview view ── */}
+        {view === 'preview' && (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
+              {parsed.map((ex, i) => (
+                <div key={i} style={{ background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)', padding: '12px 14px' }}>
+                  <div style={{ fontFamily: 'var(--font-bebas)', fontSize: 17, color: 'var(--text)', letterSpacing: '0.06em', marginBottom: 8 }}>{ex.name}</div>
+                  {ex.sets.map((s, j) => {
+                    const tc = SET_TYPE_CONFIG[s.type as SetType] ?? SET_TYPE_CONFIG.normal
+                    return (
+                      <div key={j} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0', borderTop: j > 0 ? '1px solid var(--border)' : 'none' }}>
+                        <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 10, color: 'var(--text-3)', width: 16 }}>{j + 1}</span>
+                        <span className="type-badge" style={{ color: tc.color, background: tc.bg, border: `1px solid ${tc.color}30`, pointerEvents: 'none' }}>{tc.label}</span>
+                        <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 12, color: 'var(--text-2)', flex: 1 }}>
+                          {s.dropEntries
+                            ? s.dropEntries.map(e => `${e.weight}×${e.reps}`).join(' → ')
+                            : `${s.weight} kg × ${s.reps} reps`}
+                        </span>
+                        {s.restBefore != null && (
+                          <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 10, color: 'var(--text-3)' }}>rest {s.restBefore}s</span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button onClick={() => onAddToWorkout(parsed)}
+                style={{ width: '100%', padding: '14px', background: 'var(--accent)', border: 'none', borderRadius: 12, fontFamily: 'var(--font-bebas)', fontSize: 17, letterSpacing: '0.08em', color: '#0A0A0A', cursor: 'pointer' }}>
+                {hasActiveWorkout ? 'ADD TO CURRENT WORKOUT' : 'START WORKOUT WITH THIS'}
+              </button>
+              <button onClick={handleGoToDate}
+                style={{ width: '100%', padding: '13px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, fontFamily: 'var(--font-bebas)', fontSize: 17, letterSpacing: '0.08em', color: 'var(--text)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                <Download size={14} />
+                SAVE AS PAST WORKOUT
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* ── Date pick view ── */}
+        {view === 'date' && (
+          <>
+            <p style={{ color: 'var(--text-2)', fontSize: 14, fontFamily: 'var(--font-dm-sans)', marginBottom: 16, lineHeight: 1.5 }}>
+              When did this workout happen?
+            </p>
+            <input
+              type="datetime-local"
+              value={importDate}
+              onChange={e => setImportDate(e.target.value)}
+              max={new Date().toISOString().slice(0, 16)}
+              style={{ width: '100%', padding: '14px 16px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, color: 'var(--text)', fontFamily: 'var(--font-dm-sans)', fontSize: 15, marginBottom: 16 }}
+            />
+            <div style={{ marginBottom: 14, background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)', padding: '10px 14px' }}>
+              <div style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 9, color: 'var(--text-3)', letterSpacing: '0.08em', marginBottom: 5 }}>WILL IMPORT</div>
+              <div style={{ fontFamily: 'var(--font-dm-sans)', fontSize: 13, color: 'var(--text-2)' }}>
+                {parsed.length} exercise{parsed.length !== 1 ? 's' : ''} · {parsed.reduce((n, e) => n + e.sets.length, 0)} sets total
+              </div>
+            </div>
+            <button onClick={() => importDate && onImportHistory(parsed, new Date(importDate))} disabled={!importDate}
+              style={{ width: '100%', padding: '14px', background: importDate ? 'var(--accent)' : 'var(--surface-2)', border: 'none', borderRadius: 12, fontFamily: 'var(--font-bebas)', fontSize: 17, letterSpacing: '0.08em', color: importDate ? '#0A0A0A' : 'var(--text-3)', cursor: importDate ? 'pointer' : 'not-allowed' }}>
+              SAVE TO HISTORY
+            </button>
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -303,17 +542,19 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
   const [showAddExercise, setShowAddExercise] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [importSaved, setImportSaved] = useState(false)
   const [, setTick] = useState(0)
   const [lastLoggedAt, setLastLoggedAt] = useState<number | null>(null)
   const [suggestedRest, setSuggestedRest] = useState(90)
   const [lastSessions, setLastSessions] = useState<Map<string, LastSessionData | null | 'loading'>>(new Map())
+  const [textLogOpen, setTextLogOpen] = useState(false)
   const addInputRef = useRef<HTMLInputElement>(null)
 
   // Restore from localStorage
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved) setWorkout(JSON.parse(saved))
+      const s = localStorage.getItem(STORAGE_KEY)
+      if (s) setWorkout(JSON.parse(s))
     } catch {}
   }, [])
 
@@ -333,7 +574,6 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
   // Focus add input
   useEffect(() => { if (showAddExercise) setTimeout(() => addInputRef.current?.focus(), 50) }, [showAddExercise])
 
-  // Fetch last session for a given exercise name
   const fetchLastSession = useCallback(async (exerciseName: string) => {
     if (!user || !exerciseName.trim()) return
     setLastSessions(prev => new Map(prev).set(exerciseName, 'loading'))
@@ -367,7 +607,6 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
 
   const updateExercise = useCallback((id: string, updates: Partial<Exercise>) => {
     updateWorkout(w => ({ ...w, exercises: w.exercises.map(e => e.id === id ? { ...e, ...updates } : e) }))
-    // If name changed, re-fetch last session
     if (updates.name) fetchLastSession(updates.name)
   }, [updateWorkout, fetchLastSession])
 
@@ -383,14 +622,10 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
       return {
         ...w,
         exercises: w.exercises.map(e =>
-          e.id === exerciseId ? {
-            ...e,
-            sets: e.sets.map(s => s.id === setId ? { ...s, logged: true, loggedAt: now } : s)
-          } : e
+          e.id === exerciseId ? { ...e, sets: e.sets.map(s => s.id === setId ? { ...s, logged: true, loggedAt: now } : s) } : e
         ),
       }
     })
-    // Auto-add next set if all sets are logged
     setTimeout(() => {
       updateWorkout(w => {
         const exercise = w.exercises.find(e => e.id === exerciseId)
@@ -438,6 +673,40 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
     finally { setSaving(false) }
   }, [workout, user])
 
+  // ── Text log handlers ────────────────────────────────────────────────────────
+
+  const addParsedToWorkout = useCallback((parsed: ParsedExercise[]) => {
+    const newExercises: Exercise[] = parsed.map(pe => ({
+      id: uid(),
+      name: pe.name,
+      sets: pe.sets.map(s => ({
+        id: uid(),
+        weight: s.dropEntries?.[0]?.weight ?? s.weight,
+        reps: s.dropEntries?.[0]?.reps ?? s.reps,
+        type: s.type as SetType,
+        logged: false,
+        dropEntries: s.dropEntries,
+      })),
+    }))
+
+    if (!workout) {
+      setWorkout({ id: uid(), startedAt: Date.now(), exercises: newExercises, notes: '' })
+      setSaved(false)
+      setLastSessions(new Map())
+    } else {
+      updateWorkout(w => ({ ...w, exercises: [...w.exercises, ...newExercises] }))
+    }
+    for (const ex of newExercises) fetchLastSession(ex.name)
+    setTextLogOpen(false)
+  }, [workout, updateWorkout, fetchLastSession])
+
+  const importToHistory = useCallback(async (parsed: ParsedExercise[], date: Date) => {
+    if (!user) return
+    setTextLogOpen(false)
+    const ok = await importHistoricalWorkout(parsed, user.id, user.email ?? undefined, date)
+    if (ok) { setImportSaved(true); setTimeout(() => setImportSaved(false), 4000) }
+  }, [user])
+
   // Superset color map
   const supersetColorMap = new Map<string, string>()
   let colorIdx = 0
@@ -451,9 +720,9 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
   if (!workout) {
     return (
       <div className="page-scroll" style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 32, gap: 24 }}>
-        {saved && (
+        {(saved || importSaved) && (
           <div style={{ position: 'absolute', top: 60, left: 16, right: 16, padding: '12px 16px', background: 'rgba(0,255,136,0.1)', border: '1px solid rgba(0,255,136,0.3)', borderRadius: 12, textAlign: 'center', color: 'var(--success)', fontFamily: 'var(--font-dm-sans)', fontSize: 14 }}>
-            Workout saved! Points awarded 💪
+            {saved ? 'Workout saved! Points awarded 💪' : 'Workout imported to history ✓'}
           </div>
         )}
         <div style={{ textAlign: 'center' }}>
@@ -464,6 +733,20 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
         <button onClick={startWorkout} style={{ padding: '16px 48px', background: 'var(--accent)', border: 'none', borderRadius: 14, fontFamily: 'var(--font-bebas)', fontSize: 22, color: '#0A0A0A', letterSpacing: '0.1em', cursor: 'pointer', boxShadow: '0 0 30px var(--accent-glow)' }}>
           START WORKOUT
         </button>
+        {user && (
+          <button onClick={() => setTextLogOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 24px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, color: 'var(--text-2)', fontFamily: 'var(--font-dm-sans)', fontSize: 14, cursor: 'pointer' }}>
+            <FileText size={15} />
+            Import from text / notes
+          </button>
+        )}
+        {textLogOpen && (
+          <TextLogModal
+            hasActiveWorkout={false}
+            onClose={() => setTextLogOpen(false)}
+            onAddToWorkout={addParsedToWorkout}
+            onImportHistory={importToHistory}
+          />
+        )}
       </div>
     )
   }
@@ -476,16 +759,21 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
       <div style={{ padding: '12px 16px 8px', borderBottom: '1px solid var(--border)', background: 'var(--bg)', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <div>
             <div style={{ fontFamily: 'var(--font-bebas)', fontSize: 11, color: 'var(--text-3)', letterSpacing: '0.12em', marginBottom: 2 }}>WORKOUT IN PROGRESS</div>
             <div style={{ fontFamily: 'var(--font-bebas)', fontSize: 36, color: 'var(--accent)', letterSpacing: '0.04em', lineHeight: 1, filter: 'drop-shadow(0 0 8px var(--accent-glow))' }}>
               {formatDuration(duration)}
             </div>
           </div>
-          <button onClick={finishWorkout} disabled={saving || totalLogged === 0} style={{ padding: '10px 20px', background: totalLogged > 0 ? 'var(--accent)' : 'var(--surface-2)', border: 'none', borderRadius: 10, fontFamily: 'var(--font-bebas)', fontSize: 16, letterSpacing: '0.08em', color: totalLogged > 0 ? '#0A0A0A' : 'var(--text-3)', cursor: totalLogged > 0 ? 'pointer' : 'not-allowed', boxShadow: totalLogged > 0 ? '0 0 16px var(--accent-glow)' : 'none', transition: 'all 0.2s' }}>
-            {saving ? 'SAVING...' : 'FINISH'}
-          </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button onClick={() => setTextLogOpen(true)} style={{ width: 36, height: 36, borderRadius: 9, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+              <FileText size={15} />
+            </button>
+            <button onClick={finishWorkout} disabled={saving || totalLogged === 0} style={{ padding: '10px 20px', background: totalLogged > 0 ? 'var(--accent)' : 'var(--surface-2)', border: 'none', borderRadius: 10, fontFamily: 'var(--font-bebas)', fontSize: 16, letterSpacing: '0.08em', color: totalLogged > 0 ? '#0A0A0A' : 'var(--text-3)', cursor: totalLogged > 0 ? 'pointer' : 'not-allowed', boxShadow: totalLogged > 0 ? '0 0 16px var(--accent-glow)' : 'none', transition: 'all 0.2s' }}>
+              {saving ? 'SAVING...' : 'FINISH'}
+            </button>
+          </div>
         </div>
         {totalLogged > 0 && <div style={{ marginTop: 4, fontFamily: 'var(--font-jetbrains)', fontSize: 11, color: 'var(--text-2)' }}>{totalLogged} set{totalLogged !== 1 ? 's' : ''} logged</div>}
       </div>
@@ -522,11 +810,20 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
             <button onClick={() => setShowAddExercise(false)} style={{ width: 28, height: 28, borderRadius: 7, border: 'none', background: 'transparent', color: 'var(--text-3)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={14} /></button>
           </div>
         ) : (
-          <button onClick={() => setShowAddExercise(true)} style={{ width: '100%', padding: '14px', background: 'transparent', border: '1.5px dashed var(--border)', borderRadius: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, cursor: 'pointer', fontFamily: 'var(--font-dm-sans)', fontSize: 14, marginBottom: 40 }}>
+          <button onClick={() => setShowAddExercise(true)} style={{ width: '100%', padding: '14px', background: 'transparent', border: '1.5px dashed var(--border)', borderRadius: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, cursor: 'pointer', fontFamily: 'var(--font-dm-sans)', fontSize: 14, marginBottom: 16 }}>
             <Plus size={16} />Add Exercise
           </button>
         )}
       </div>
+
+      {textLogOpen && (
+        <TextLogModal
+          hasActiveWorkout
+          onClose={() => setTextLogOpen(false)}
+          onAddToWorkout={addParsedToWorkout}
+          onImportHistory={importToHistory}
+        />
+      )}
     </div>
   )
 }

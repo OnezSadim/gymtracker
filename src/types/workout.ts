@@ -1,4 +1,9 @@
-export type SetType = 'normal' | 'warmup' | 'dropset' | 'failure'
+export type SetType = 'normal' | 'warmup' | 'dropset' | 'failure' | 'halfrep'
+
+export interface DropEntry {
+  weight: string
+  reps: string
+}
 
 export interface WorkoutSet {
   id: string
@@ -7,6 +12,7 @@ export interface WorkoutSet {
   type: SetType
   logged: boolean
   loggedAt?: number   // unix timestamp ms
+  dropEntries?: DropEntry[]  // for dropset/halfrep: all entries (including first)
 }
 
 export interface Exercise {
