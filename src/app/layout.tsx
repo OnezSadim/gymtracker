@@ -9,10 +9,15 @@ export const metadata: Metadata = {
     capable: true,
     statusBarStyle: 'black-translucent',
     title: 'GymTracker',
+    startupImage: [],
+  },
+  other: {
+    'mobile-web-app-capable': 'yes',
   },
   formatDetection: { telephone: false },
   icons: {
-    apple: '/icon-192.png',
+    apple: '/icon.svg',
+    icon: '/icon.svg',
   },
 }
 

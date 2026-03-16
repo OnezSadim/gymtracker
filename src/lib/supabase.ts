@@ -27,20 +27,31 @@ export async function signOut() {
   return getSupabase().auth.signOut()
 }
 
-export async function updateUsername(userId: string, username: string) {
+// Ensures a profile row exists for the user (new signups sometimes miss the trigger)
+export async function ensureProfile(userId: string, email: string) {
+  const username = email.split('@')[0]
   return (getSupabase() as any)
     .from('profiles')
-    .update({ username })
-    .eq('id', userId)
+    .upsert({ id: userId, username }, { onConflict: 'id', ignoreDuplicates: true })
+}
+
+export async function updateUsername(userId: string, username: string) {
+  // Upsert so it works even if the profile row was never created
+  return (getSupabase() as any)
+    .from('profiles')
+    .upsert({ id: userId, username }, { onConflict: 'id' })
 }
 
 // ── Workouts ──────────────────────────────────────────────────────────────────
 
-export async function saveWorkout(workout: ActiveWorkout, userId: string): Promise<string | null> {
+export async function saveWorkout(workout: ActiveWorkout, userId: string, userEmail?: string): Promise<string | null> {
   const loggedSets = workout.exercises.flatMap(e => e.sets.filter(s => s.logged))
   if (loggedSets.length === 0) return null
 
   const sb = getSupabase() as any
+
+  // Ensure profile exists (guard against trigger not firing on signup)
+  if (userEmail) await ensureProfile(userId, userEmail)
 
   const { data: wData, error: wError } = await sb
     .from('workouts')
@@ -137,7 +148,7 @@ export async function fetchRecentStats(userId: string) {
     .not('finished_at', 'is', null)
     .order('started_at', { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()   // won't 406 when there are no workouts yet
 
   return { weeklyCount, weeklySeconds, lastWorkout: lastData || null }
 }
@@ -157,7 +168,7 @@ export async function fetchLastExerciseSession(
   const sb = getSupabase() as any
 
   // Find the most recent finished workout for this user that had this exercise
-  let query = sb
+  const { data } = await sb
     .from('workouts')
     .select('id, started_at, exercises!inner(id, name, sets(set_number, weight, reps, set_type))')
     .eq('user_id', userId)
@@ -165,8 +176,7 @@ export async function fetchLastExerciseSession(
     .ilike('exercises.name', exerciseName.trim())
     .order('started_at', { ascending: false })
     .limit(5)
-
-  const { data } = await query
+    // no .single() — returns array, safe when empty
 
   if (!data || data.length === 0) return null
 
@@ -218,7 +228,9 @@ export async function fetchUserGroups(userId: string): Promise<BattleGroup[]> {
   return data.map((row: any) => row.battle_groups).filter(Boolean)
 }
 
-export async function createBattleGroup(name: string, userId: string): Promise<BattleGroup | null> {
+export async function createBattleGroup(name: string, userId: string, userEmail?: string): Promise<BattleGroup | null> {
+  if (userEmail) await ensureProfile(userId, userEmail)
+
   const { data, error } = await (getSupabase() as any)
     .from('battle_groups')
     .insert({ name, created_by: userId })

@@ -215,7 +215,7 @@ export default function FriendsPage({ user }: FriendsPageProps) {
     if (!createName.trim() || !user) return
     setActionLoading(true)
     setActionError('')
-    const group = await createBattleGroup(createName.trim(), user.id)
+    const group = await createBattleGroup(createName.trim(), user.id, user.email ?? undefined)
     if (group) {
       setGroups(prev => [...prev, group])
       setSelectedGroup(group)

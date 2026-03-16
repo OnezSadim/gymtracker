@@ -429,7 +429,7 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
     if (!workout || !user) return
     setSaving(true)
     try {
-      await saveWorkout(workout, user.id)
+      await saveWorkout(workout, user.id, user.email ?? undefined)
       setWorkout(null)
       setLastLoggedAt(null)
       setLastSessions(new Map())
