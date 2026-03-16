@@ -95,11 +95,11 @@ export default function SwipeContainer({
     isDraggingHorizontally.current = null
   }, [dragOffset, pages.length, goToPage])
 
-  // Calculate transform
-  // Container is 300vw wide. Each page is 100vw = 33.333% of container.
-  // To show page i: translateX = -(i * 33.333%) + dragOffset_in_container_space
-  // dragOffset is in viewport px; container is 300vw so 1vw = 1% container
-  const translateX = `calc(${-currentPage * 33.333}% + ${dragOffset}px)`
+  // Dynamic widths based on page count
+  const n = pages.length
+  const pageWidthPct = 100 / n            // % of container per page
+  const containerWidthPct = n * 100       // container is n * 100vw
+  const translateX = `calc(${-currentPage * pageWidthPct}% + ${dragOffset}px)`
 
   return (
     <div
@@ -108,20 +108,26 @@ export default function SwipeContainer({
         inset: 0,
         overflow: 'hidden',
         background: 'var(--bg)',
-        paddingBottom: 74, // nav bar height (approx)
+        paddingBottom: 74,
       }}
     >
       {/* Pages container */}
       <div
         ref={containerRef}
-        className={`swipe-container ${isTransitioning ? 'transitioning' : ''}`}
-        style={{ transform: `translateX(${translateX})` }}
+        className={isTransitioning ? 'transitioning' : ''}
+        style={{
+          display: 'flex',
+          width: `${containerWidthPct}%`,
+          height: '100%',
+          willChange: 'transform',
+          transform: `translateX(${translateX})`,
+        }}
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
       >
         {pages.map((page, i) => (
-          <div key={i} className="swipe-page">
+          <div key={i} style={{ width: `${pageWidthPct}%`, height: '100%', flexShrink: 0, position: 'relative', overflow: 'hidden' }}>
             {page}
           </div>
         ))}

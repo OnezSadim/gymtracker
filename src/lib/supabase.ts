@@ -2,7 +2,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import type { ActiveWorkout, DBExercise, DBSet, WorkoutWithExercises } from '@/types/workout'
 
-// Lazily create the client so missing env vars during static prerender don't crash
 let _client: SupabaseClient | null = null
 
 export function getSupabase(): SupabaseClient {
@@ -14,7 +13,7 @@ export function getSupabase(): SupabaseClient {
   return _client
 }
 
-// ── Auth helpers ──────────────────────────────────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────────────────────────
 
 export async function signUp(email: string, password: string) {
   return getSupabase().auth.signUp({ email, password })
@@ -28,45 +27,44 @@ export async function signOut() {
   return getSupabase().auth.signOut()
 }
 
-// ── Workout helpers ───────────────────────────────────────────────────────────
+export async function updateUsername(userId: string, username: string) {
+  return (getSupabase() as any)
+    .from('profiles')
+    .update({ username })
+    .eq('id', userId)
+}
+
+// ── Workouts ──────────────────────────────────────────────────────────────────
 
 export async function saveWorkout(workout: ActiveWorkout, userId: string): Promise<string | null> {
   const loggedSets = workout.exercises.flatMap(e => e.sets.filter(s => s.logged))
   if (loggedSets.length === 0) return null
 
-  const sb = getSupabase()
-  const startedAt = new Date(workout.startedAt).toISOString()
-  const finishedAt = new Date().toISOString()
-  const durationSeconds = Math.floor((Date.now() - workout.startedAt) / 1000)
+  const sb = getSupabase() as any
 
-  const { data: wData, error: wError } = await (sb as any)
+  const { data: wData, error: wError } = await sb
     .from('workouts')
     .insert({
       user_id: userId,
-      started_at: startedAt,
-      finished_at: finishedAt,
-      duration_seconds: durationSeconds,
+      started_at: new Date(workout.startedAt).toISOString(),
+      finished_at: new Date().toISOString(),
+      duration_seconds: Math.floor((Date.now() - workout.startedAt) / 1000),
       notes: workout.notes || null,
     })
     .select('id')
     .single()
 
-  if (wError || !wData) {
-    console.error('Error saving workout:', wError)
-    return null
-  }
-
-  const workoutId = wData.id
+  if (wError || !wData) { console.error('saveWorkout:', wError); return null }
 
   for (let i = 0; i < workout.exercises.length; i++) {
     const exercise = workout.exercises[i]
-    const loggedSetsForExercise = exercise.sets.filter(s => s.logged)
-    if (loggedSetsForExercise.length === 0) continue
+    const logged = exercise.sets.filter(s => s.logged)
+    if (logged.length === 0) continue
 
-    const { data: eData, error: eError } = await (sb as any)
+    const { data: eData, error: eError } = await sb
       .from('exercises')
       .insert({
-        workout_id: workoutId,
+        workout_id: wData.id,
         name: exercise.name,
         order_index: i,
         superset_group: exercise.supersetGroup || null,
@@ -74,27 +72,24 @@ export async function saveWorkout(workout: ActiveWorkout, userId: string): Promi
       .select('id')
       .single()
 
-    if (eError || !eData) {
-      console.error('Error saving exercise:', eError)
-      continue
-    }
+    if (eError || !eData) { console.error('saveExercise:', eError); continue }
 
-    const exerciseId = eData.id
-
-    const setsToInsert = loggedSetsForExercise.map((s, idx) => ({
-      exercise_id: exerciseId,
-      set_number: idx + 1,
-      reps: s.reps || null,
-      weight: s.weight || null,
-      set_type: s.type,
-      logged_at: s.loggedAt ? new Date(s.loggedAt).toISOString() : null,
-    }))
-
-    const { error: sError } = await (sb as any).from('sets').insert(setsToInsert)
-    if (sError) console.error('Error saving sets:', sError)
+    await sb.from('sets').insert(
+      logged.map((s, idx) => ({
+        exercise_id: eData.id,
+        set_number: idx + 1,
+        reps: s.reps || null,
+        weight: s.weight || null,
+        set_type: s.type,
+        logged_at: s.loggedAt ? new Date(s.loggedAt).toISOString() : null,
+      }))
+    )
   }
 
-  return workoutId
+  // Award points to groups after saving
+  await awardWorkoutPoints(userId)
+
+  return wData.id
 }
 
 export async function fetchWorkoutHistory(userId: string, limit = 20): Promise<WorkoutWithExercises[]> {
@@ -106,10 +101,7 @@ export async function fetchWorkoutHistory(userId: string, limit = 20): Promise<W
     .order('started_at', { ascending: false })
     .limit(limit)
 
-  if (error) {
-    console.error('Error fetching history:', error)
-    return []
-  }
+  if (error) return []
 
   return ((workouts ?? []) as WorkoutWithExercises[]).map(w => ({
     ...w,
@@ -148,4 +140,173 @@ export async function fetchRecentStats(userId: string) {
     .single()
 
   return { weeklyCount, weeklySeconds, lastWorkout: lastData || null }
+}
+
+// ── Last exercise session (for progressive overload reference) ────────────────
+
+export interface LastSessionData {
+  workoutDate: string
+  sets: { set_number: number; weight: string | null; reps: string | null; set_type: string }[]
+}
+
+export async function fetchLastExerciseSession(
+  exerciseName: string,
+  userId: string,
+  excludeWorkoutId?: string
+): Promise<LastSessionData | null> {
+  const sb = getSupabase() as any
+
+  // Find the most recent finished workout for this user that had this exercise
+  let query = sb
+    .from('workouts')
+    .select('id, started_at, exercises!inner(id, name, sets(set_number, weight, reps, set_type))')
+    .eq('user_id', userId)
+    .not('finished_at', 'is', null)
+    .ilike('exercises.name', exerciseName.trim())
+    .order('started_at', { ascending: false })
+    .limit(5)
+
+  const { data } = await query
+
+  if (!data || data.length === 0) return null
+
+  // Pick the first result that isn't the current workout
+  const match = data.find((w: any) => w.id !== excludeWorkoutId)
+  if (!match) return null
+
+  // Get the exercise data from the nested exercises array
+  const exercise = Array.isArray(match.exercises)
+    ? match.exercises.find((e: any) => e.name.toLowerCase() === exerciseName.toLowerCase())
+      ?? match.exercises[0]
+    : match.exercises
+
+  if (!exercise) return null
+
+  const sets = (exercise.sets || []).sort((a: any, b: any) => a.set_number - b.set_number)
+
+  return {
+    workoutDate: match.started_at,
+    sets,
+  }
+}
+
+// ── Battle groups ─────────────────────────────────────────────────────────────
+
+export interface BattleGroup {
+  id: string
+  name: string
+  invite_code: string
+  created_by: string
+  created_at: string
+}
+
+export interface GroupMember {
+  user_id: string
+  username: string
+  weeklyWorkouts: number
+  totalWorkouts: number
+  points: number
+}
+
+export async function fetchUserGroups(userId: string): Promise<BattleGroup[]> {
+  const { data } = await (getSupabase() as any)
+    .from('group_members')
+    .select('battle_groups(*)')
+    .eq('user_id', userId)
+
+  if (!data) return []
+  return data.map((row: any) => row.battle_groups).filter(Boolean)
+}
+
+export async function createBattleGroup(name: string, userId: string): Promise<BattleGroup | null> {
+  const { data, error } = await (getSupabase() as any)
+    .from('battle_groups')
+    .insert({ name, created_by: userId })
+    .select()
+    .single()
+
+  if (error) { console.error('createGroup:', error); return null }
+
+  // Auto-join the creator
+  await (getSupabase() as any)
+    .from('group_members')
+    .insert({ group_id: data.id, user_id: userId })
+
+  return data
+}
+
+export async function joinBattleGroup(inviteCode: string, userId: string): Promise<{ success: boolean; error?: string }> {
+  const sb = getSupabase() as any
+
+  const { data: group } = await sb
+    .from('battle_groups')
+    .select('id')
+    .eq('invite_code', inviteCode.toUpperCase().trim())
+    .single()
+
+  if (!group) return { success: false, error: 'Invalid invite code' }
+
+  const { error } = await sb
+    .from('group_members')
+    .insert({ group_id: group.id, user_id: userId })
+
+  if (error) {
+    if (error.code === '23505') return { success: false, error: 'Already in this group' }
+    return { success: false, error: 'Failed to join group' }
+  }
+
+  return { success: true }
+}
+
+export async function leaveGroup(groupId: string, userId: string) {
+  return (getSupabase() as any)
+    .from('group_members')
+    .delete()
+    .eq('group_id', groupId)
+    .eq('user_id', userId)
+}
+
+export async function fetchGroupLeaderboard(groupId: string): Promise<GroupMember[]> {
+  const sb = getSupabase() as any
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+
+  // Get all members with their profiles
+  const { data: members } = await sb
+    .from('group_members')
+    .select('user_id, profiles(username)')
+    .eq('group_id', groupId)
+
+  if (!members || members.length === 0) return []
+
+  // For each member, get workout counts in parallel
+  const scores = await Promise.all(
+    members.map(async (m: any) => {
+      const uid = m.user_id
+      const username = m.profiles?.username || uid.slice(0, 8)
+
+      const [{ count: weekly }, { count: total }] = await Promise.all([
+        sb.from('workouts').select('*', { count: 'exact', head: true })
+          .eq('user_id', uid).not('finished_at', 'is', null).gte('started_at', weekAgo),
+        sb.from('workouts').select('*', { count: 'exact', head: true })
+          .eq('user_id', uid).not('finished_at', 'is', null),
+      ])
+
+      const weeklyWorkouts = weekly ?? 0
+      const totalWorkouts = total ?? 0
+
+      // Scoring: +10 per workout this week, +15 if 3+ workouts (consistency), +5 per extra workout above 3
+      let points = weeklyWorkouts * 10
+      if (weeklyWorkouts >= 3) points += 15
+      if (weeklyWorkouts >= 5) points += 10
+
+      return { user_id: uid, username, weeklyWorkouts, totalWorkouts, points }
+    })
+  )
+
+  return scores.sort((a, b) => b.points - a.points)
+}
+
+// Award points hook — called after saving a workout (currently just a log, scores computed live)
+async function awardWorkoutPoints(_userId: string) {
+  // Scores are computed dynamically from workouts — nothing to store
 }
