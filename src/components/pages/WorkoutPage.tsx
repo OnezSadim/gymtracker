@@ -7,7 +7,7 @@ import {
 import { createPortal } from 'react-dom'
 import { Plus, X, ChevronDown, ChevronUp, Link2, Link2Off, CheckCircle2, Dumbbell, History, FileText, Download } from 'lucide-react'
 import type { ActiveWorkout, Exercise, WorkoutSet, SetType } from '@/types/workout'
-import { saveWorkout, fetchLastExerciseSession, importHistoricalWorkout, type LastSessionData } from '@/lib/supabase'
+import { saveWorkout, fetchLastExerciseSession, importHistoricalWorkout, fetchUserExerciseNames, type LastSessionData } from '@/lib/supabase'
 import { parseWorkoutText, parseWithGemini, parseWithVertexAI, detectDateFromText, type ParsedExercise } from '@/lib/parseWorkout'
 import type { User } from '@supabase/supabase-js'
 
@@ -273,6 +273,45 @@ function SetRow({ set, index, onUpdate, onLog, onRemove, weightRef }: {
       <button onClick={onRemove} style={{ width: 26, height: 26, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer' }}>
         <X size={13} />
       </button>
+    </div>
+  )
+}
+
+// ── Exercise Autocomplete ─────────────────────────────────────────────────────
+
+function ExerciseSuggestions({ query, allNames, currentNames, onSelect }: {
+  query: string
+  allNames: { name: string; lastUsed: string }[]
+  currentNames: Set<string>
+  onSelect: (name: string) => void
+}) {
+  if (!query.trim()) return null
+
+  const q = query.toLowerCase()
+  const filtered = allNames
+    .filter(s => s.name.toLowerCase().includes(q))
+    .slice(0, 7)
+
+  if (filtered.length === 0) return null
+
+  return (
+    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, background: 'var(--surface)', border: '1px solid var(--accent)', borderRadius: 10, overflow: 'hidden', marginTop: 4, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
+      {filtered.map((s, i) => {
+        const alreadyIn = currentNames.has(s.name.toLowerCase())
+        return (
+          <button
+            key={i}
+            onMouseDown={e => { e.preventDefault(); onSelect(s.name) }}
+            style={{ width: '100%', padding: '10px 14px', background: alreadyIn ? 'rgba(200,255,0,0.04)' : 'none', border: 'none', borderBottom: i < filtered.length - 1 ? '1px solid var(--border)' : 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left' }}
+          >
+            <History size={11} color={alreadyIn ? 'var(--accent)' : 'var(--text-3)'} style={{ flexShrink: 0 }} />
+            <span style={{ flex: 1, fontFamily: 'var(--font-bebas)', fontSize: 16, color: alreadyIn ? 'var(--accent)' : 'var(--text)', letterSpacing: '0.05em' }}>{s.name}</span>
+            <span style={{ fontFamily: 'var(--font-jetbrains)', fontSize: 10, color: 'var(--text-3)' }}>
+              {alreadyIn ? 'in workout' : relativeDate(s.lastUsed)}
+            </span>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -549,6 +588,8 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
   const [suggestedRest, setSuggestedRest] = useState(90)
   const [lastSessions, setLastSessions] = useState<Map<string, LastSessionData | null | 'loading'>>(new Map())
   const [textLogOpen, setTextLogOpen] = useState(false)
+  const [exerciseNames, setExerciseNames] = useState<{ name: string; lastUsed: string }[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
   const addInputRef = useRef<HTMLInputElement>(null)
 
   // Restore from localStorage
@@ -575,6 +616,11 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
   // Focus add input
   useEffect(() => { if (showAddExercise) setTimeout(() => addInputRef.current?.focus(), 50) }, [showAddExercise])
 
+  // Load exercise name history for autocomplete
+  useEffect(() => {
+    if (user) fetchUserExerciseNames(user.id).then(setExerciseNames)
+  }, [user])
+
   const fetchLastSession = useCallback(async (exerciseName: string) => {
     if (!user || !exerciseName.trim()) return
     setLastSessions(prev => new Map(prev).set(exerciseName, 'loading'))
@@ -593,14 +639,19 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
     setWorkout(prev => prev ? updater(prev) : prev)
   }, [])
 
-  const addExercise = useCallback(() => {
-    const name = newExerciseName.trim()
-    if (!name) return
-    updateWorkout(w => ({ ...w, exercises: [...w.exercises, makeExercise(name)] }))
-    fetchLastSession(name)
+  const addExerciseByName = useCallback((name: string) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    updateWorkout(w => ({ ...w, exercises: [...w.exercises, makeExercise(trimmed)] }))
+    fetchLastSession(trimmed)
     setNewExerciseName('')
     setShowAddExercise(false)
-  }, [newExerciseName, updateWorkout, fetchLastSession])
+    setShowSuggestions(false)
+  }, [updateWorkout, fetchLastSession])
+
+  const addExercise = useCallback(() => {
+    addExerciseByName(newExerciseName)
+  }, [newExerciseName, addExerciseByName])
 
   const removeExercise = useCallback((id: string) => {
     updateWorkout(w => ({ ...w, exercises: w.exercises.filter(e => e.id !== id) }))
@@ -804,12 +855,32 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
         ))}
 
         {showAddExercise ? (
-          <div style={{ background: 'var(--surface)', borderRadius: 14, border: '1px solid var(--accent)', padding: '10px 14px', display: 'flex', gap: 10, alignItems: 'center', boxShadow: '0 0 12px var(--accent-dim)', marginBottom: 8 }}>
-            <input ref={addInputRef} value={newExerciseName} onChange={(e) => setNewExerciseName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') addExercise() }}
-              placeholder="Exercise name..." style={{ flex: 1, fontFamily: 'var(--font-bebas)', fontSize: 18, color: 'var(--text)', letterSpacing: '0.06em' }} />
-            <button onClick={addExercise} disabled={!newExerciseName.trim()} style={{ padding: '6px 14px', background: newExerciseName.trim() ? 'var(--accent)' : 'var(--surface-2)', border: 'none', borderRadius: 8, fontFamily: 'var(--font-bebas)', fontSize: 14, color: newExerciseName.trim() ? '#0A0A0A' : 'var(--text-3)', cursor: 'pointer' }}>ADD</button>
-            <button onClick={() => setShowAddExercise(false)} style={{ width: 28, height: 28, borderRadius: 7, border: 'none', background: 'transparent', color: 'var(--text-3)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={14} /></button>
+          <div style={{ position: 'relative', marginBottom: 8 }}>
+            <div style={{ background: 'var(--surface)', borderRadius: 14, border: '1px solid var(--accent)', padding: '10px 14px', display: 'flex', gap: 10, alignItems: 'center', boxShadow: '0 0 12px var(--accent-dim)' }}>
+              <input
+                ref={addInputRef}
+                value={newExerciseName}
+                onChange={(e) => setNewExerciseName(e.target.value)}
+                onFocus={() => setShowSuggestions(true)}
+                onBlur={() => setShowSuggestions(false)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { addExercise(); setShowSuggestions(false) }
+                  if (e.key === 'Escape') { setShowAddExercise(false); setShowSuggestions(false) }
+                }}
+                placeholder="Exercise name..."
+                style={{ flex: 1, fontFamily: 'var(--font-bebas)', fontSize: 18, color: 'var(--text)', letterSpacing: '0.06em' }}
+              />
+              <button onClick={() => { addExercise(); setShowSuggestions(false) }} disabled={!newExerciseName.trim()} style={{ padding: '6px 14px', background: newExerciseName.trim() ? 'var(--accent)' : 'var(--surface-2)', border: 'none', borderRadius: 8, fontFamily: 'var(--font-bebas)', fontSize: 14, color: newExerciseName.trim() ? '#0A0A0A' : 'var(--text-3)', cursor: 'pointer' }}>ADD</button>
+              <button onClick={() => { setShowAddExercise(false); setShowSuggestions(false) }} style={{ width: 28, height: 28, borderRadius: 7, border: 'none', background: 'transparent', color: 'var(--text-3)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={14} /></button>
+            </div>
+            {showSuggestions && (
+              <ExerciseSuggestions
+                query={newExerciseName}
+                allNames={exerciseNames}
+                currentNames={new Set(workout?.exercises.map(e => e.name.toLowerCase()) ?? [])}
+                onSelect={(name) => addExerciseByName(name)}
+              />
+            )}
           </div>
         ) : (
           <button onClick={() => setShowAddExercise(true)} style={{ width: '100%', padding: '14px', background: 'transparent', border: '1.5px dashed var(--border)', borderRadius: 14, color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, cursor: 'pointer', fontFamily: 'var(--font-dm-sans)', fontSize: 14, marginBottom: 16 }}>

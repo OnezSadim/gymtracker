@@ -350,6 +350,60 @@ export async function fetchGroupLeaderboard(groupId: string): Promise<GroupMembe
   return scores.sort((a, b) => b.points - a.points)
 }
 
+// ── Exercise name list (for autocomplete) ─────────────────────────────────────
+
+export async function fetchUserExerciseNames(userId: string): Promise<{ name: string; lastUsed: string }[]> {
+  const { data } = await (getSupabase() as any)
+    .from('workouts')
+    .select('started_at, exercises(name)')
+    .eq('user_id', userId)
+    .not('finished_at', 'is', null)
+    .order('started_at', { ascending: false })
+    .limit(100)
+
+  if (!data) return []
+
+  const seen = new Map<string, { name: string; lastUsed: string }>()
+  for (const workout of data) {
+    for (const ex of (workout.exercises || [])) {
+      const key = (ex.name as string).toLowerCase()
+      if (!seen.has(key)) seen.set(key, { name: ex.name, lastUsed: workout.started_at })
+    }
+  }
+  return Array.from(seen.values())
+}
+
+// ── Full history for a single exercise ────────────────────────────────────────
+
+export interface ExerciseSessionData {
+  workoutDate: string
+  sets: { set_number: number; weight: string | null; reps: string | null; set_type: string }[]
+}
+
+export async function fetchExerciseProgress(exerciseName: string, userId: string): Promise<ExerciseSessionData[]> {
+  const sb = getSupabase() as any
+  const { data } = await sb
+    .from('workouts')
+    .select('id, started_at, exercises!inner(name, sets(set_number, weight, reps, set_type))')
+    .eq('user_id', userId)
+    .not('finished_at', 'is', null)
+    .ilike('exercises.name', exerciseName.trim())
+    .order('started_at', { ascending: false })
+    .limit(60)
+
+  if (!data) return []
+
+  return data.map((w: any) => {
+    const ex = Array.isArray(w.exercises)
+      ? (w.exercises.find((e: any) => e.name.toLowerCase() === exerciseName.toLowerCase()) ?? w.exercises[0])
+      : w.exercises
+    return {
+      workoutDate: w.started_at,
+      sets: (ex?.sets || []).sort((a: any, b: any) => a.set_number - b.set_number),
+    }
+  }).filter((s: any) => s.sets.length > 0)
+}
+
 // ── Import historical workout (from text log) ─────────────────────────────────
 
 export async function importHistoricalWorkout(
