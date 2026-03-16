@@ -1,0 +1,288 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-bebas: 'Bebas Neue', sans-serif;
+  --font-dm-sans: 'DM Sans', sans-serif;
+  --font-jetbrains: 'JetBrains Mono', monospace;
+
+  --bg: #0A0A0A;
+  --surface: #141414;
+  --surface-2: #1E1E1E;
+  --surface-3: #252525;
+  --border: #2C2C2C;
+  --border-bright: #3C3C3C;
+  --accent: #C8FF00;
+  --accent-dim: rgba(200, 255, 0, 0.12);
+  --accent-glow: rgba(200, 255, 0, 0.35);
+  --text: #FFFFFF;
+  --text-2: #888888;
+  --text-3: #444444;
+  --danger: #FF4444;
+  --warning: #FFAA00;
+  --success: #00FF88;
+
+  /* superset group colors */
+  --ss-1: #6366f1;
+  --ss-2: #ec4899;
+  --ss-3: #f97316;
+  --ss-4: #14b8a6;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-dm-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Safari iOS safe areas */
+body {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+#__next {
+  height: 100%;
+}
+
+/* Prevent iOS overscroll bounce on the root */
+html {
+  overscroll-behavior: none;
+}
+
+/* Scrollable areas within pages */
+.page-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Hide scrollbar but keep scroll */
+.page-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* Input styles */
+input, textarea {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font-dm-sans);
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+}
+
+/* Accent glow effect */
+.accent-glow {
+  box-shadow: 0 0 20px var(--accent-glow), 0 0 40px rgba(200, 255, 0, 0.15);
+}
+
+/* Noise texture overlay */
+.noise::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Swipe container */
+.swipe-container {
+  display: flex;
+  width: 300%;
+  height: 100%;
+  will-change: transform;
+}
+
+.swipe-page {
+  width: 33.333%;
+  height: 100%;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Bottom nav */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 100;
+}
+
+/* Rest timer pulse */
+@keyframes rest-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.rest-pulse {
+  animation: rest-pulse 2s ease-in-out infinite;
+}
+
+/* Set row appear */
+@keyframes set-appear {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.set-appear {
+  animation: set-appear 0.18s ease-out forwards;
+}
+
+/* Exercise card appear */
+@keyframes card-appear {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.card-appear {
+  animation: card-appear 0.22s ease-out forwards;
+}
+
+/* Workout timer */
+@keyframes timer-tick {
+  0%, 100% { opacity: 1; }
+  49% { opacity: 1; }
+  50% { opacity: 0.4; }
+  99% { opacity: 0.4; }
+}
+
+.timer-colon {
+  animation: timer-tick 1s steps(1) infinite;
+}
+
+/* Logged set checkmark */
+@keyframes check-pop {
+  0% { transform: scale(0.5); opacity: 0; }
+  60% { transform: scale(1.2); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.check-pop {
+  animation: check-pop 0.25s ease-out forwards;
+}
+
+/* Superset connector line */
+.superset-line {
+  position: absolute;
+  left: 16px;
+  width: 2px;
+  background: linear-gradient(to bottom, var(--ss-color, var(--ss-1)), var(--ss-color, var(--ss-1)));
+  top: -8px;
+  bottom: -8px;
+  z-index: 1;
+}
+
+/* Page slide transition class applied during JS animation */
+.transitioning {
+  transition: transform 0.32s cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* Drag resistance (clamped at boundaries) */
+.dragging {
+  transition: none !important;
+}
+
+/* Auth form fade in */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-up {
+  animation: fade-up 0.4s ease-out forwards;
+}
+
+/* Staggered fade */
+.fade-up-1 { animation: fade-up 0.4s 0.05s ease-out both; }
+.fade-up-2 { animation: fade-up 0.4s 0.12s ease-out both; }
+.fade-up-3 { animation: fade-up 0.4s 0.2s ease-out both; }
+.fade-up-4 { animation: fade-up 0.4s 0.28s ease-out both; }
+.fade-up-5 { animation: fade-up 0.4s 0.36s ease-out both; }
+
+/* Nav indicator slide */
+.nav-indicator {
+  transition: left 0.3s cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* Custom checkbox */
+.set-checkbox {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-bright);
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.set-checkbox:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.set-checkbox:checked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: url("data:image/svg+xml,%3Csvg viewBox='0 0 10 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 4L3.5 6.5L9 1' stroke='%230A0A0A' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/10px no-repeat;
+}
+
+/* Pill badge for set type */
+.type-badge {
+  font-family: var(--font-jetbrains);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  text-transform: uppercase;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
