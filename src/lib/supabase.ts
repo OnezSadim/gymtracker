@@ -1,4 +1,34 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * ─── SUPABASE SCHEMA (project: ruqwmwxsoizviijmtpey) ────────────────────────
+ *
+ * profiles          id uuid PK (→ auth.users), username text, created_at
+ *   RLS: select=public, insert=own, update=own
+ *   trigger: handle_new_user → auto-insert on auth.users insert (username = email prefix)
+ *
+ * workouts          id uuid PK, user_id (→profiles), started_at, finished_at,
+ *                   duration_seconds int, notes text, created_at
+ *   RLS: select/insert/update/delete = own (user_id = auth.uid())
+ *
+ * exercises         id uuid PK, workout_id (→workouts), name text, order_index int,
+ *                   superset_group text, created_at
+ *   RLS: select/insert/delete = own (via workouts.user_id)
+ *
+ * sets              id uuid PK, exercise_id (→exercises), set_number int,
+ *                   reps text, weight text, set_type (normal|warmup|dropset|failure),
+ *                   logged_at timestamptz, created_at
+ *   RLS: select/insert = own (via exercises → workouts.user_id)
+ *
+ * battle_groups     id uuid PK, name text, invite_code text UNIQUE (6-char upper),
+ *                   created_by (→profiles), created_at
+ *   RLS: select=public, insert=own (created_by), delete=own
+ *
+ * group_members     PK(group_id, user_id), group_id (→battle_groups),
+ *                   user_id (→profiles), joined_at
+ *   RLS: select=public, insert=own (user_id), delete=own
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ */
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import type { ActiveWorkout, DBExercise, DBSet, WorkoutWithExercises } from '@/types/workout'
 
