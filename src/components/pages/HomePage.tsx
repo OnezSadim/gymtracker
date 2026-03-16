@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Dumbbell, TrendingUp, Clock, LogOut, ChevronRight, Settings, X, Eye, EyeOff } from 'lucide-react'
 import { signIn, signUp, signOut, fetchRecentStats } from '@/lib/supabase'
 import type { User } from '@supabase/supabase-js'
@@ -612,7 +613,7 @@ function Dashboard({ user, onStartWorkout, onLogout }: {
         </div>
       )}
 
-      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && createPortal(<SettingsPanel onClose={() => setSettingsOpen(false)} />, document.body)}
 
       {/* Settings row */}
       <div className="fade-up-4" style={{ marginBottom: 16 }}>

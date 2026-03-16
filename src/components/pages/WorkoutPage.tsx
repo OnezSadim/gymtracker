@@ -4,6 +4,7 @@ import {
   useState, useEffect, useRef, useCallback,
   type KeyboardEvent, type ChangeEvent,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { Plus, X, ChevronDown, ChevronUp, Link2, Link2Off, CheckCircle2, Dumbbell, History, FileText, Download } from 'lucide-react'
 import type { ActiveWorkout, Exercise, WorkoutSet, SetType } from '@/types/workout'
 import { saveWorkout, fetchLastExerciseSession, importHistoricalWorkout, type LastSessionData } from '@/lib/supabase'
@@ -739,13 +740,14 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
             Import from text / notes
           </button>
         )}
-        {textLogOpen && (
+        {textLogOpen && createPortal(
           <TextLogModal
             hasActiveWorkout={false}
             onClose={() => setTextLogOpen(false)}
             onAddToWorkout={addParsedToWorkout}
             onImportHistory={importToHistory}
-          />
+          />,
+          document.body
         )}
       </div>
     )
@@ -816,13 +818,14 @@ export default function WorkoutPage({ user, onWorkoutStatusChange }: WorkoutPage
         )}
       </div>
 
-      {textLogOpen && (
+      {textLogOpen && createPortal(
         <TextLogModal
           hasActiveWorkout
           onClose={() => setTextLogOpen(false)}
           onAddToWorkout={addParsedToWorkout}
           onImportHistory={importToHistory}
-        />
+        />,
+        document.body
       )}
     </div>
   )
